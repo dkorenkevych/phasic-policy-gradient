@@ -1,10 +1,10 @@
 import argparse
 from mpi4py import MPI
-from . import ppg
-from . import torch_util as tu
-from .impala_cnn import ImpalaEncoder
-from . import logger
-from .envs import get_venv
+from phasic_policy_gradient import ppg
+from phasic_policy_gradient import torch_util as tu
+from phasic_policy_gradient.impala_cnn import ImpalaEncoder
+from phasic_policy_gradient import logger
+from phasic_policy_gradient.envs import get_venv
 
 def train_fn(env_name="coinrun",
     distribution_mode="hard",
@@ -47,7 +47,7 @@ def train_fn(env_name="coinrun",
     )
     model = ppg.PhasicValueModel(venv.ob_space, venv.ac_space, enc_fn, arch=arch)
 
-    model.to(tu.dev())
+    model.to("cuda")
     logger.log(tu.format_model(model))
     tu.sync_params(model.parameters())
 
@@ -79,11 +79,11 @@ def train_fn(env_name="coinrun",
 def main():
     parser = argparse.ArgumentParser(description='Process PPG training arguments.')
     parser.add_argument('--env_name', type=str, default='coinrun')
-    parser.add_argument('--num_envs', type=int, default=64)
+    parser.add_argument('--num_envs', type=int, default=2)
     parser.add_argument('--n_epoch_pi', type=int, default=1)
     parser.add_argument('--n_epoch_vf', type=int, default=1)
     parser.add_argument('--n_aux_epochs', type=int, default=6)
-    parser.add_argument('--n_pi', type=int, default=32)
+    parser.add_argument('--n_pi', type=int, default=2)
     parser.add_argument('--clip_param', type=float, default=0.2)
     parser.add_argument('--kl_penalty', type=float, default=0.0)
     parser.add_argument('--arch', type=str, default='dual') # 'shared', 'detach', or 'dual'

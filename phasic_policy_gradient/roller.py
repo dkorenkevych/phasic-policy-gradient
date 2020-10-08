@@ -36,6 +36,8 @@ class Roller:
         self._infos = None
         self._keep_cost = keep_cost
         self.has_non_rolling_eps = keep_non_rolling
+        self.local_ep_rets = []
+        self.local_ep_lens = []
 
     @property
     def interact_count(self) -> int:
@@ -158,15 +160,21 @@ class Roller:
         """
         out = {}
         lastrew, ob, first = tree_map(tu.np2th, self._venv.observe())
+        if first and len(self._venv.ep_buf) > 0:
+            self.local_ep_rets.append(self._venv.ep_buf[-1].ret)
+            self.local_ep_lens.append(self._venv.ep_buf[-1].len)
         if self._keep_cost:
             out.update(
                 lastcost=tu.np2th(
                     np.array([i.get("cost", 0.0) for i in self._venv.get_info()])
                 )
             )
-        ac, newstate, other_outs = self._act_fn(
+        ac, logits, newstate, other_outs = self._act_fn(
             ob=ob, first=first, state_in=self._state, **act_kwargs
         )
+        if self.step_count%1000 < 5:
+            logits = logits.cpu().numpy()
+            print("action", np.exp(logits)/np.sum(np.exp(logits)))
         self._state = newstate
         out.update(lastrew=lastrew, ob=ob, first=first, ac=ac)
         self._venv.act(tree_map(tu.th2np, ac))

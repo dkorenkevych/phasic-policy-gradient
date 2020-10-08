@@ -11,6 +11,7 @@ from .log_save_helper import LogSaveHelper
 from .minibatch_optimize import minibatch_optimize
 from .roller import Roller
 from .reward_normalizer import RewardNormalizer
+import copy
 
 import math
 from . import logger
@@ -117,7 +118,7 @@ def learn(
     venv: "(VecEnv) vectorized environment",
     model: "(ppo.PpoModel)",
     interacts_total: "(float) total timesteps of interaction" = float("inf"),
-    nstep: "(int) number of serial timesteps" = 256,
+    nstep: "(int) number of serial timesteps" = 128,
     γ: "(float) discount" = 0.99,
     λ: "(float) GAE parameter" = 0.95,
     clip_param: "(float) PPO parameter for clipping prob ratio" = 0.2,
@@ -140,12 +141,13 @@ def learn(
 ):
     if comm is None:
         comm = MPI.COMM_WORLD
-
+    format_strs = ['csv', 'stdout'] if comm.Get_rank() == 0 else []
+    logger.configure(comm=comm, dir="/tmp/logs/", format_strs=format_strs)
     learn_state = learn_state or {}
     ic_per_step = venv.num * comm.size * nstep
 
     opt_keys = (
-        ["pi", "vf"] if (n_epoch_pi != n_epoch_pi) else ["pi"]
+        ["pi", "vf"] if (n_epoch_pi != n_epoch_vf) else ["pi"]
     )  # use separate optimizers when n_epoch_pi != nepoch
     params = list(model.parameters())
     opts = learn_state.get("opts") or {
@@ -206,22 +208,41 @@ def learn(
     callback_exit = False  # Does callback say to exit loop?
 
     curr_interact_count = learn_state.get("curr_interact_count") or 0
+    if curr_interact_count == 0:
+        first_update = True
+    else:
+        first_update = False
     curr_iteration = 0
     seg_buf = learn_state.get("seg_buf") or []
 
     while curr_interact_count < interacts_total and not callback_exit:
-        seg = roller.multi_step(nstep)
+        local_ep_rets = []
+        local_ep_lens = []
+        roller.local_ep_rets = []
+        roller.local_ep_lens = []
+        seg = roller.multi_step(nstep * nminibatch)
         lsh.gather_roller_stats(roller)
         if rnorm:
             seg["reward"] = reward_normalizer(seg["reward"], seg["first"])
         compute_advantage(model, seg, γ, λ, comm=comm)
+        del seg['finalfirst']
+        del seg['finalob']
+        del seg['finalstate']
+        def reshape_tensor(x):
+            if len(x.shape) < 2:
+                return x
+            if x.shape[1] < nstep * nminibatch:
+                return th.repeat_interleave(x, repeats=nminibatch, dim=0)
+            return th.reshape(x, (nminibatch, x.shape[1]//nminibatch) + x.shape[2:])
+        seg = tree_map(reshape_tensor, seg)
+
 
         if store_segs:
             seg_buf.append(tree_map(lambda x: x.cpu(), seg))
 
         with logger.profile_kv("optimization"):
             # when n_epoch_pi is specified (and n_epoch_pi != nepoch), we perform separate policy and vf epochs with separate optimizers
-            if n_epoch_pi != n_epoch_pi:
+            if n_epoch_pi != n_epoch_vf:
                 minibatch_optimize(
                     train_vf,
                     {k: seg[k] for k in INPUT_KEYS},
@@ -252,7 +273,8 @@ def learn(
         curr_iteration += 1
 
         for callback in callbacks:
-            callback_exit = callback_exit or bool(callback(locals()))
+            callback_exit = callback_exit or bool(callback(locals(), globals()))
+        first_update = False
 
     return dict(
         opts=opts,

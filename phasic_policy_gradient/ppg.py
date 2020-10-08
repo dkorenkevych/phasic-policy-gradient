@@ -30,9 +30,11 @@ class PpoModel(th.nn.Module):
             state_in=state_in,
         )
         ac = pd.sample()
+        logits = pd.logits
         logp = sum_nonbatch(pd.log_prob(ac))
         return (
             tree_map(lambda x: x[:, 0], ac),
+            tree_map(lambda x: x[:, 0], logits),
             state_out,
             dict(vpred=vpred[:, 0], logp=logp[:, 0]),
         )
@@ -227,6 +229,7 @@ def learn(
     interacts_total=float("inf"),
     name2coef=None,
     comm=None,
+    callback=None,
 ):
     """
     Run PPO for X iterations
@@ -238,7 +241,7 @@ def learn(
     ppo_state = None
     aux_state = th.optim.Adam(model.parameters(), lr=aux_lr)
     name2coef = name2coef or {}
-
+    first_update = True
     while True:
         store_segs = n_pi != 0 and n_aux_epochs != 0
 
@@ -248,14 +251,15 @@ def learn(
             model=model,
             learn_state=ppo_state,
             callbacks=[
-                lambda _l: n_pi > 0 and _l["curr_iteration"] >= n_pi,
+                lambda _l, _g: n_pi > 0 and _l["curr_iteration"] >= n_pi,
+                callback
             ],
             interacts_total=interacts_total,
             store_segs=store_segs,
             comm=comm,
             **ppo_hps,
         )
-
+        first_update = False
         if ppo_state["curr_interact_count"] >= interacts_total:
             break
 
